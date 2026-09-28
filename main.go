@@ -145,7 +145,7 @@ var tmpl = template.Must(template.New("index").Parse(`<!DOCTYPE html>
             <span class="badge-env env-{{.Environment}}">Môi Trường: {{.Environment}}</span>
         </div>
         <h1>{{.ServiceName}}</h1>
-        <div class="subtitle">GitOps Demo Multi-Environment Backend Microservice</div>
+        <div class="subtitle">GitOps Demo version Multi-Environment Backend Microservice</div>
 
         <div class="health-status {{if .IsHealthy}}status-ok{{else}}status-fail{{end}}">
             Liveness Probe: {{if .IsHealthy}}🟢 HEALTHY (HTTP 200){{else}}🔴 UNHEALTHY (HTTP 500) - Simulating Crash{{end}}
