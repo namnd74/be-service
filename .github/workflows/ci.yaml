@@ -52,7 +52,7 @@ jobs:
 
       - name: Build Local Image for Scanning
         run: |
-          docker build -t local-test-image:${{ github.sha }} .
+          docker build --load -t local-test-image:${{ github.sha }} .
 
       - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@master
