@@ -112,7 +112,7 @@ jobs:
     name: 4. Auto-Trigger GitOps (Dev Environment)
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
     steps:
       - name: Checkout GitOps Manifest Repo
         uses: actions/checkout@v4
