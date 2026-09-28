@@ -1,0 +1,137 @@
+name: CI Pipeline & GitOps Promotion
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/be-service
+  CONFIG_REPO: ${{ github.repository_owner }}/gitops-manifests
+
+jobs:
+  # -----------------------------------------------------------
+  # 1. Quality Gate: Linting & Unit Testing
+  # -----------------------------------------------------------
+  test-and-lint:
+    name: 1. Test & Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Run Unit Tests
+        run: |
+          go test -v -coverprofile=coverage.out ./...
+
+      - name: Run Go Vet & Formatting Check
+        run: |
+          go vet ./...
+          diff -u <(echo -n) <(gofmt -d .)
+
+  # -----------------------------------------------------------
+  # 2. Security Gate: Container Build & Trivy Image Scan
+  # -----------------------------------------------------------
+  security-scan:
+    name: 2. Container Security Scan (Trivy)
+    needs: test-and-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Local Image for Scanning
+        run: |
+          docker build -t local-test-image:${{ github.sha }} .
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'local-test-image:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1' # Chặn pipeline nếu có CVE CRITICAL!
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL'
+
+  # -----------------------------------------------------------
+  # 3. Artifact Packaging: Push Image to Container Registry
+  # -----------------------------------------------------------
+  build-and-push:
+    name: 3. Publish Artifact
+    needs: security-scan
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # -----------------------------------------------------------
+  # 4. GitOps Auto-Trigger: Update Dev Config in Manifest Repo
+  # -----------------------------------------------------------
+  update-gitops-config:
+    name: 4. Auto-Trigger GitOps (Dev Environment)
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout GitOps Manifest Repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CONFIG_REPO }}
+          token: ${{ secrets.CONFIG_REPO_PAT || secrets.GITHUB_TOKEN }}
+          ref: main
+
+      - name: Update Image Tag in Dev Environment via Kustomize
+        run: |
+          TARGET_DIR="apps/be-service/envs/dev"
+          cd "$TARGET_DIR"
+          NEW_TAG="sha-$(echo ${{ github.sha }} | cut -c1-7)"
+          echo "Updating dev image tag to: $NEW_TAG"
+          sed -i "s/newTag:.*/newTag: $NEW_TAG/" kustomization.yaml
+
+      - name: Commit and Push Changes to Manifest Repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apps/be-service/envs/dev/kustomization.yaml
+          git diff --staged --quiet || (git commit -m "ci(dev): auto update be-service image tag to sha-$(echo ${{ github.sha }} | cut -c1-7) [skip ci]" && git push)
