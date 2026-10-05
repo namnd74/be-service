@@ -7,17 +7,18 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
 
 var (
-	version   = getEnv("APP_VERSION", "v1.0.0")
-	gitCommit = getEnv("GIT_COMMIT", "dev-local")
-	envName   = getEnv("APP_ENV", "dev")
-	port      = getEnv("PORT", "8080")
-	dbSecret  = getEnv("DB_PASSWORD", "mock-secret-not-configured")
-	startTime = time.Now()
+	buildVersion = "dev-local"
+	buildCommit  = "dev-local"
+	envName      = getEnv("APP_ENV", "dev")
+	port         = getEnv("PORT", "8080")
+	dbSecret     = getEnv("DB_PASSWORD", "")
+	startTime    = time.Now()
 
 	mu        sync.RWMutex
 	isHealthy = true
@@ -32,6 +33,7 @@ type PageData struct {
 	Uptime      string
 	IsHealthy   bool
 	SecretState string
+	DemoEnabled bool
 }
 
 func getEnv(key, fallback string) string {
@@ -39,6 +41,31 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func appVersion() string { return getEnv("APP_VERSION", buildVersion) }
+
+func appCommit() string { return getEnv("GIT_COMMIT", buildCommit) }
+
+func envTrue(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func demoAllowed() bool {
+	return envName == "dev" && envTrue("DEMO_MODE")
+}
+
+func persistentDemoFault() bool {
+	return demoAllowed() && envName == "dev" && envTrue("DEMO_FAULT")
+}
+
+func demoRequestAllowed(r *http.Request) bool {
+	return r.Method == http.MethodGet && demoAllowed()
 }
 
 var tmpl = template.Must(template.New("index").Parse(`<!DOCTYPE html>
@@ -151,10 +178,10 @@ var tmpl = template.Must(template.New("index").Parse(`<!DOCTYPE html>
             Liveness Probe: {{if .IsHealthy}}🟢 HEALTHY (HTTP 200){{else}}🔴 UNHEALTHY (HTTP 500) - Simulating Crash{{end}}
         </div>
 
-        <div class="grid">
-            <div class="card">
-                <div class="card-label">App Version</div>
-                <div class="card-val" style="color: #38bdf8;">{{.Version}}</div>
+		<div class="grid">
+		    <div class="card">
+		        <div class="card-label">App Version</div>
+		        <div class="card-val" style="color: #38bdf8;">{{.Version}}</div>
             </div>
             <div class="card">
                 <div class="card-label">Git Commit SHA</div>
@@ -175,33 +202,35 @@ var tmpl = template.Must(template.New("index").Parse(`<!DOCTYPE html>
             <div class="card-val" style="color: #a78bfa; font-family: monospace;">{{.SecretState}}</div>
         </div>
 
+        {{if .DemoEnabled}}
         <div class="actions">
-            <a href="/simulate-crash" class="btn btn-danger">Simulate Bug/Crash (Trigger Rollback)</a>
-            <a href="/simulate-fix" class="btn btn-success">Restore Healthy</a>
+            <a href="/simulate-crash" class="btn btn-danger">Trigger demo failure</a>
+            <a href="/simulate-fix" class="btn btn-success">Restore demo health</a>
         </div>
+        {{end}}
     </div>
 </body>
 </html>`))
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	hostname, _ := os.Hostname()
-	secretDisplay := "Secret Loaded: "
-	if len(dbSecret) > 3 {
-		secretDisplay += dbSecret[:3] + "********"
-	} else {
-		secretDisplay += "***"
+	secretDisplay := "Secret missing"
+	if dbSecret != "" {
+		secretDisplay = "Secret loaded"
 	}
 
 	mu.RLock()
+	healthy := isHealthy || !demoAllowed()
 	data := PageData{
 		ServiceName: "Backend API Service",
-		Version:     version,
-		GitCommit:   gitCommit,
+		Version:     appVersion(),
+		GitCommit:   appCommit(),
 		Environment: envName,
 		Hostname:    hostname,
 		Uptime:      time.Since(startTime).Truncate(time.Second).String(),
-		IsHealthy:   isHealthy,
+		IsHealthy:   healthy,
 		SecretState: secretDisplay,
+		DemoEnabled: demoAllowed(),
 	}
 	mu.RUnlock()
 
@@ -210,18 +239,26 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	response := map[string]string{
 		"service":    "be-service",
-		"version":    version,
-		"git_commit": gitCommit,
+		"version":    appVersion(),
+		"git_commit": appCommit(),
 		"env":        envName,
-	})
+	}
+	mu.RLock()
+	faultMode := demoAllowed() && (!isHealthy || persistentDemoFault())
+	mu.RUnlock()
+	if faultMode {
+		// This is a mode indicator only; no secret or fault details are exposed.
+		response["fault_mode"] = "enabled"
+	}
+	json.NewEncoder(w).Encode(response)
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	mu.RLock()
 	defer mu.RUnlock()
-	if !isHealthy {
+	if demoAllowed() && !isHealthy {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "FAIL: Simulated crash state")
 		return
@@ -231,22 +268,33 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSimulateCrash(w http.ResponseWriter, r *http.Request) {
-	mu.Lock()
-	isHealthy = false
-	mu.Unlock()
-	log.Printf("[DEMO] Simulated crash triggered! /healthz will return 500.")
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	handleDemoHealth(w, r, false, "[DEMO] Simulated crash triggered! /healthz will return 500.")
 }
 
 func handleSimulateFix(w http.ResponseWriter, r *http.Request) {
+	handleDemoHealth(w, r, true, "[DEMO] Health restored!")
+}
+
+func handleDemoHealth(w http.ResponseWriter, r *http.Request, healthy bool, message string) {
+	if !demoRequestAllowed(r) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
 	mu.Lock()
-	isHealthy = true
+	isHealthy = healthy
 	mu.Unlock()
-	log.Printf("[DEMO] Health restored!")
+	log.Print(message)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func main() {
+	if persistentDemoFault() {
+		isHealthy = false
+	}
 	http.HandleFunc("/", handleRoot)
 	http.HandleFunc("/version", handleVersion)
 	http.HandleFunc("/healthz", handleHealthz)
@@ -254,7 +302,7 @@ func main() {
 	http.HandleFunc("/simulate-fix", handleSimulateFix)
 
 	addr := ":" + port
-	log.Printf("Backend service starting on %s (env=%s, version=%s, commit=%s)", addr, envName, version, gitCommit)
+	log.Printf("Backend service starting on %s (env=%s, version=%s, commit=%s)", addr, envName, appVersion(), appCommit())
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}

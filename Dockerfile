@@ -1,26 +1,39 @@
-# Stage 1: Build binary
-FROM golang:1.24-alpine AS builder
+# Stage 1: Build a static binary for the requested target architecture.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
+
+ARG APP_VERSION=v1.1.0
+ARG GIT_COMMIT=dev-local
 
 WORKDIR /app
 COPY go.mod ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o server .
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
+    -ldflags="-w -s -X main.buildVersion=${APP_VERSION} -X main.buildCommit=${GIT_COMMIT}" \
+    -o server .
 
-# Stage 2: Minimal runtime image
-FROM alpine:3.20
+# Stage 2: No OS packages in the runtime image.
+FROM scratch
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
+ARG APP_VERSION=v1.1.0
+ARG GIT_COMMIT=dev-local
+ARG SOURCE_URL=https://github.com/namnd74/be-service
+LABEL org.opencontainers.image.version=$APP_VERSION \
+      org.opencontainers.image.revision=$GIT_COMMIT \
+      org.opencontainers.image.source=$SOURCE_URL
 
-WORKDIR /home/appuser
-COPY --from=builder --chown=appuser:appgroup /app/server .
+USER 65532:65532
+
+WORKDIR /
+COPY --from=builder /app/server /server
 
 ENV PORT=8080 \
     APP_ENV=dev \
-    APP_VERSION=v1.0.0
+    DEMO_MODE=false \
+    DEMO_FAULT=false
 
 EXPOSE 8080
 
-ENTRYPOINT ["./server"]
+ENTRYPOINT ["/server"]
