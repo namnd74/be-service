@@ -177,7 +177,7 @@ jobs:
         with:
           repository: ${{ env.CONFIG_REPO }}
           token: ${{ secrets.CONFIG_REPO_PAT }}
-          ref: main
+          ref: dev
           fetch-depth: 0
       - name: Install pinned YAML tools
         run: bash scripts/install-ci-tools.sh
@@ -192,13 +192,14 @@ jobs:
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid registry digest" >&2; exit 1; }
           test "$SOURCE_SHA" = "$(gh api "repos/$SOURCE_REPO/branches/main" --jq .commit.sha)"
-          (cd apps/be-service/envs/dev && kustomize edit set image "$IMAGE=$IMAGE@$DIGEST")
+          (cd apps/be-service/base && kustomize edit set image "$IMAGE=$IMAGE@$DIGEST")
           bash scripts/validate-manifests.sh
       - name: Create dev pull request
         uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
         with:
           token: ${{ secrets.CONFIG_REPO_PAT }}
-          add-paths: apps/be-service/envs/dev/kustomization.yaml
+          base: dev
+          add-paths: apps/be-service/base/kustomization.yaml
           title: "release(dev): ${{ needs.publish.outputs.version }}"
           commit-message: "ci(dev): propose ${{ needs.publish.outputs.source_sha }}"
           branch: release-be-service-dev

@@ -14,12 +14,12 @@ class DevUpdateTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = pathlib.Path(self.directory.name)
-        (self.root/'apps/be-service/envs/dev').mkdir(parents=True)
+        (self.root/'apps/be-service/base').mkdir(parents=True)
         (self.root/'scripts').mkdir()
         (self.root/'bin').mkdir()
         for name, script in {
             'gh': 'printf "%s\\n" "$REMOTE_SHA"',
-            'kustomize': 'printf "update %s\\n" "$*" >> "$CALLS"',
+            'kustomize': 'printf "update %s at %s\\n" "$*" "$PWD" >> "$CALLS"',
         }.items():
             p = self.root/'bin'/name
             p.write_text('#!/bin/sh\n'+script+'\n')
@@ -52,6 +52,7 @@ class DevUpdateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = (self.root/'calls').read_text()
         self.assertIn('edit set image '+self.env['IMAGE']+'='+self.env['IMAGE']+'@'+self.env['DIGEST'], calls)
+        self.assertIn('apps/be-service/base', calls)
         self.assertIn('validate', calls)
 
 

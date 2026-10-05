@@ -7,7 +7,7 @@ commit SHA và các label OCI được ghi vào image lúc build. Secret chỉ h
 CI chạy test/coverage/race/vet/format, build một image theo `IMAGE_ARCH`, Trivy
 scan image đó, rồi trên `main` publish đúng image đã scan lên GHCR theo tag SHA
 và digest. Sau khi publish, cùng digest được attested và ký bằng Cosign.
-Sau gate, CI tạo PR cập nhật cấu hình Dev; CI không push thẳng vào config repo,
+Sau gate, CI tạo PR cập nhật image chung vào nhánh config `dev`; CI không push thẳng vào config repo,
 không triển khai Kubernetes. Argo CD đọc config repo để deploy sau khi PR được
 review và merge.
 
@@ -23,8 +23,8 @@ PR chạy quality/build/scan. Push `main` chạy pipeline phát hành và tạo 
 `CONFIG_REPO_PAT` phải được đặt trong Secrets của cả hai repo, có quyền
 contents/pull_requests trên config repo và đọc packages/provenance của BE; không
 có fallback sang `GITHUB_TOKEN`. `IMAGE_ARCH` mặc định `arm64` cho lab Apple
-Silicon; cluster x86 dùng `amd64`. Promotion và rollback đều là PR trong config
-repo, dùng cùng digest đã scan.
+Silicon; cluster x86 dùng `amd64`. Promotion merge config `dev -> staging -> prod` qua PR và merge commit,
+giữ cùng digest đã scan. Rollback mở PR vào nhánh môi trường tương ứng.
 
 Các tool local gồm Go, Python, Docker và bộ kiểm tra manifest theo runbook;
 CI cài phiên bản đã pin cùng checksum qua `install-ci-tools.sh`.
