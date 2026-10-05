@@ -1,137 +1,209 @@
 name: CI Pipeline & GitOps Promotion
-
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
-
+    branches: [main]
+concurrency:
+  group: be-service-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/be-service
   CONFIG_REPO: ${{ github.repository_owner }}/gitops-manifests
-
+  IMAGE_ARCH: ${{ vars.IMAGE_ARCH || 'arm64' }}
+  LOCAL_IMAGE: be-service-ci:${{ github.sha }}
 jobs:
-  # -----------------------------------------------------------
-  # 1. Quality Gate: Linting & Unit Testing
-  # -----------------------------------------------------------
-  test-and-lint:
-    name: 1. Test & Quality Gate
+  quality:
+    name: Test, race, vet, and format
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with: {go-version: '1.27'}
+      - run: ./scripts/check-quality.sh
+      - name: Script behavior tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          go-version: '1.24'
+          name: be-service-coverage-${{ github.sha }}
+          path: coverage.out
+          if-no-files-found: error
 
-      - name: Run Unit Tests
-        run: |
-          go test -v -coverprofile=coverage.out ./...
-
-      - name: Run Go Vet & Formatting Check
-        run: |
-          go vet ./...
-          diff -u <(echo -n) <(gofmt -d .)
-
-  # -----------------------------------------------------------
-  # 2. Security Gate: Container Build & Trivy Image Scan
-  # -----------------------------------------------------------
-  security-scan:
-    name: 2. Container Security Scan (Trivy)
-    needs: test-and-lint
+  build-scan:
+    name: Build once and security gate
+    needs: quality
     runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.meta.outputs.source_sha }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Local Image for Scanning
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - id: meta
+        shell: bash
         run: |
-          docker build --load -t local-test-image:${{ github.sha }} .
-
-      - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < VERSION)
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'VERSION must be vX.Y.Z' >&2; exit 1; }
+          printf 'version=%s\nsource_sha=%s\n' "$version" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Build the single local image
+        env:
+          APP_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          docker build --load --platform "linux/$IMAGE_ARCH" \
+            --build-arg APP_VERSION="$APP_VERSION" \
+            --build-arg GIT_COMMIT="$GITHUB_SHA" \
+            --build-arg SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            -t "$LOCAL_IMAGE" .
+      - name: Save exact image for publish job
+        run: docker save "$LOCAL_IMAGE" | gzip -1 > image.tar.gz
+      - name: Security gate (fixed and unfixed HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
         with:
-          image-ref: 'local-test-image:${{ github.sha }}'
-          format: 'table'
-          exit-code: '1' # Chặn pipeline nếu có CVE CRITICAL!
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL'
+          image-ref: ${{ env.LOCAL_IMAGE }}
+          format: json
+          output: trivy-results.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          vuln-type: os,library
+          exit-code: '1'
+      - name: Full vulnerability report
+        if: always()
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
+        with:
+          image-ref: ${{ env.LOCAL_IMAGE }}
+          format: json
+          output: trivy-full.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          vuln-type: os,library
+          exit-code: '0'
+      - name: CycloneDX SBOM
+        if: always()
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
+        with:
+          image-ref: ${{ env.LOCAL_IMAGE }}
+          format: cyclonedx
+          output: sbom.cdx.json
+          scan-type: image
+          exit-code: '0'
+      - name: Upload exact image and reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: be-service-build-${{ github.sha }}
+          path: |
+            image.tar.gz
+            trivy-results.json
+            trivy-full.json
+            sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 14
 
-  # -----------------------------------------------------------
-  # 3. Artifact Packaging: Push Image to Container Registry
-  # -----------------------------------------------------------
-  build-and-push:
-    name: 3. Publish Artifact
-    needs: security-scan
+  publish:
+    name: Publish immutable image and release metadata
+    needs: build-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     outputs:
-      image_tag: ${{ steps.meta.outputs.tags }}
+      image_digest: ${{ steps.publish.outputs.image_digest }}
+      source_sha: ${{ needs.build-scan.outputs.source_sha }}
+      version: ${{ needs.build-scan.outputs.version }}
+      release_json: ${{ steps.publish.outputs.release_json }}
+      source_run_url: ${{ steps.publish.outputs.source_run_url }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: be-service-build-${{ github.sha }}
+      - run: gunzip -c image.tar.gz | docker load
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
+      - run: docker tag "$LOCAL_IMAGE" "$REGISTRY/$IMAGE_NAME:sha-${{ github.sha }}"
+      - name: Push and record remote manifest digest
+        id: publish
+        run: |
+          ./scripts/publish-image.sh "$REGISTRY/$IMAGE_NAME" "sha-${{ github.sha }}" \
+            "${{ github.sha }}" "${{ needs.build-scan.outputs.version }}" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" release.json
+      - name: Attest published image provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=sha-,format=short
-            type=raw,value=latest
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.publish.outputs.image_digest }}
+          push-to-registry: true
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6e04d228eb30da1757ee4e1dd75a0ec73a653e06 # v3.1.1
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          cosign-release: 'v2.6.1'
+      - name: Sign published image keylessly
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.publish.outputs.image_digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: be-service-release-${{ github.sha }}
+          path: |
+            release.json
+            trivy-results.json
+            trivy-full.json
+            sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 90
 
-  # -----------------------------------------------------------
-  # 4. GitOps Auto-Trigger: Update Dev Config in Manifest Repo
-  # -----------------------------------------------------------
   update-gitops-config:
-    name: 4. Auto-Trigger GitOps (Dev Environment)
-    needs: build-and-push
+    name: Propose dev image update
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
     steps:
-      - name: Checkout GitOps Manifest Repo
-        uses: actions/checkout@v4
+      - name: Require explicit config repository credential
+        env:
+          CONFIG_REPO_PAT: ${{ secrets.CONFIG_REPO_PAT }}
+        run: test -n "$CONFIG_REPO_PAT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: ${{ env.CONFIG_REPO }}
-          token: ${{ secrets.CONFIG_REPO_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.CONFIG_REPO_PAT }}
           ref: main
-
-      - name: Update Image Tag in Dev Environment via Kustomize
+          fetch-depth: 0
+      - name: Install pinned YAML tools
+        run: bash scripts/install-ci-tools.sh
+      - name: Prepare dev image update
+        env:
+          SOURCE_SHA: ${{ needs.publish.outputs.source_sha }}
+          DIGEST: ${{ needs.publish.outputs.image_digest }}
+          SOURCE_REPO: ${{ github.repository }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          TARGET_DIR="apps/be-service/envs/dev"
-          cd "$TARGET_DIR"
-          NEW_TAG="sha-$(echo ${{ github.sha }} | cut -c1-7)"
-          echo "Updating dev image tag to: $NEW_TAG"
-          sed -i "s/newTag:.*/newTag: $NEW_TAG/" kustomization.yaml
-
-      - name: Commit and Push Changes to Manifest Repo
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add apps/be-service/envs/dev/kustomization.yaml
-          git diff --staged --quiet || (git commit -m "ci(dev): auto update be-service image tag to sha-$(echo ${{ github.sha }} | cut -c1-7) [skip ci]" && git push)
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid registry digest" >&2; exit 1; }
+          test "$SOURCE_SHA" = "$(gh api "repos/$SOURCE_REPO/branches/main" --jq .commit.sha)"
+          (cd apps/be-service/envs/dev && kustomize edit set image "$IMAGE=$IMAGE@$DIGEST")
+          bash scripts/validate-manifests.sh
+      - name: Create dev pull request
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        with:
+          token: ${{ secrets.CONFIG_REPO_PAT }}
+          add-paths: apps/be-service/envs/dev/kustomization.yaml
+          title: "release(dev): ${{ needs.publish.outputs.version }}"
+          commit-message: "ci(dev): propose ${{ needs.publish.outputs.source_sha }}"
+          branch: release-be-service-dev
+          body: |
+            Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.publish.outputs.image_digest }}`
+            Source: ${{ github.server_url }}/${{ github.repository }}/commit/${{ needs.publish.outputs.source_sha }}
+            Evidence: ${{ needs.publish.outputs.source_run_url }}
+            The scanned image was published, signed and attested. Review and merge to deploy Dev.

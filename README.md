@@ -1,14 +1,35 @@
-# Backend Microservice (`be-service`)
+# Backend Microservice
 
-Kho mã nguồn ứng dụng Backend dành cho Lập trình viên trong bài Lab & Seminar GitOps.
+Repo ứng dụng Go và CI. `main.go` phục vụ UI, `/version`, `/healthz`; VERSION,
+commit SHA và các label OCI được ghi vào image lúc build. Secret chỉ hiển thị
+`loaded`/`missing`; fault demo kéo dài chỉ bật ở Dev.
 
-## 1. Kiến trúc
-- Ngôn ngữ: Go 1.21
-- Web UI & REST API: `/`, `/version`, `/healthz`, `/simulate-crash`
-- Container: Dockerfile multi-stage, non-root user
+CI chạy test/coverage/race/vet/format, build một image theo `IMAGE_ARCH`, Trivy
+scan image đó, rồi trên `main` publish đúng image đã scan lên GHCR theo tag SHA
+và digest. Sau khi publish, cùng digest được attested và ký bằng Cosign.
+Sau gate, CI tạo PR cập nhật cấu hình Dev; CI không push thẳng vào config repo,
+không triển khai Kubernetes. Argo CD đọc config repo để deploy sau khi PR được
+review và merge.
 
-## 2. Quy trình CI (GitHub Actions)
-1. **Quality Gate:** Test & Lint (`go test`, `go vet`, `gofmt`)
-2. **Security Gate:** Quét lỗ hổng Docker image bằng **Trivy** (chặn nếu có CVE `CRITICAL`)
-3. **Artifact:** Đóng gói và đẩy Docker image lên GitHub Container Registry (`ghcr.io`)
-4. **GitOps Trigger:** Tự động commit cập nhật tag mới vào repository cấu hình `gitops-manifests`.
+`release.json` chỉ là artifact của CI, lưu cùng report scan/SBOM/provenance; nó
+không được đặt trong overlay và không phải nguồn trạng thái triển khai.
+
+```bash
+bash scripts/check-quality.sh
+python3 -m unittest discover -s scripts/tests -v
+```
+
+PR chạy quality/build/scan. Push `main` chạy pipeline phát hành và tạo Dev PR.
+`CONFIG_REPO_PAT` phải được đặt trong Secrets của cả hai repo, có quyền
+contents/pull_requests trên config repo và đọc packages/provenance của BE; không
+có fallback sang `GITHUB_TOKEN`. `IMAGE_ARCH` mặc định `arm64` cho lab Apple
+Silicon; cluster x86 dùng `amd64`. Promotion và rollback đều là PR trong config
+repo, dùng cùng digest đã scan.
+
+Các tool local gồm Go, Python, Docker và bộ kiểm tra manifest theo runbook;
+CI cài phiên bản đã pin cùng checksum qua `install-ci-tools.sh`.
+
+Đọc [runbook seminar](../gitops-manifests/scripts/demo-runbook.md) để setup,
+connect, promotion, demo security/secret/drift và rollback. [Supply-chain
+controls](docs/supply-chain.md) mô tả scan, SBOM, provenance, signing và helper
+kiểm tra image.

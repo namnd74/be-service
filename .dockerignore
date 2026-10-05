@@ -1,0 +1,10 @@
+.git
+**/__pycache__
+.github
+.dockerignore
+Dockerfile
+README.md
+VERSION
+*.test
+coverage.out
+.demo
