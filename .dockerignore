@@ -8,3 +8,6 @@ VERSION
 *.test
 coverage.out
 .demo
+
+.env.local
+.local/

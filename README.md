@@ -1,32 +1,66 @@
-# Backend dùng cho GitOps demo
+# Backend
 
-Service Go có `/healthz` và `/version`. Repo làm việc trên `main`.
-Source không phụ thuộc tài khoản GitHub hoặc đường dẫn máy cụ thể.
+Service Go cho GitOps demo, làm việc trên `main`.
 
-Chạy nhanh backend:
+| Endpoint | Chức năng |
+| --- | --- |
+| `/` | Giao diện trạng thái |
+| `/healthz` | Kiểm tra health |
+| `/version` | Version, source commit và môi trường |
 
-```bash
-APP_ENV=dev DB_PASSWORD=local-demo DEMO_MODE=true go run .
-```
+## Chạy backend riêng
 
-Mở <http://localhost:8080/version>. Password này chỉ là giá trị demo local.
-Kiểm tra: `bash scripts/check-quality.sh` (Go cần hỗ trợ các flags trong script).
-
-Để chạy toàn bộ Docker/k3d/Sealed Secrets/Argo CD và ba môi trường local,
-clone repo cấu hình cạnh repo này thành thư mục `gitops-manifests`, rồi:
+Cần Go và Bash. Tạo cấu hình local từ mẫu:
 
 ```bash
-cd ../gitops-manifests
 cp .env.local.example .env.local
-bash scripts/local-dev.sh up
 ```
 
-Xem [hướng dẫn từng bước](../gitops-manifests/scripts/rebuild-step-by-step.md).
-Image local build theo kiến trúc Docker host; không cần GHCR hoặc PAT.
+Chỉnh password và các giá trị riêng trong `.env.local`, rồi chạy trong Bash:
 
-CI GitHub mặc định chạy quality, build và scan. Publish/ký/attest và mở PR vào
-repo cấu hình chỉ bật khi đặt variable `ENABLE_GITOPS_RELEASE=true`.
-`CONFIG_REPO` chỉ định repo manifest, `CONFIG_BRANCH` mặc định `main`,
-`IMAGE_ARCH` mặc định `amd64`. Cần secret `CONFIG_REPO_PAT` để tạo PR config.
-Xem [runbook cấu hình hosted](../gitops-manifests/scripts/demo-runbook.md) và
-[supply-chain controls](docs/supply-chain.md).
+```bash
+set -a
+source .env.local
+set +a
+go run .
+```
+
+Mặc định HTTP tại <http://localhost:8080/>. `.env.local` không được commit
+hoặc gửi vào Docker build context.
+
+| Biến | Chức năng |
+| --- | --- |
+| `PORT` | Port backend |
+| `APP_ENV` | Tên môi trường |
+| `DB_PASSWORD` | Secret local |
+| `DEMO_MODE` | Bật thao tác demo, chỉ có hiệu lực ở dev |
+| `DEMO_FAULT` | Mô phỏng lỗi khi demo mode được bật |
+
+## Chạy toàn bộ GitOps local
+
+Clone repository manifest cạnh repo này thành thư mục `gitops-manifests`,
+sau đó theo [README manifest](../gitops-manifests/README.md).
+Launcher build image theo Docker host, dựng k3d/Argo CD/Sealed Secrets và triển
+khai ba môi trường trên `main`. Secret Kubernetes được launcher tạo riêng;
+không lấy password từ env của chế độ chạy Go riêng.
+
+## Kiểm tra
+
+```bash
+bash scripts/check-quality.sh
+python3 -m unittest discover -s scripts/tests
+```
+
+Quality gồm test, coverage, race, vet và gofmt.
+
+## CI và phát hành
+
+CI mặc định test/build/scan. Trivy chặn HIGH/CRITICAL, xuất report và SBOM.
+Khi bật `ENABLE_GITOPS_RELEASE=true` trong GitHub Variables, image đã scan được
+publish GHCR, ký keyless Cosign, attest provenance và mở PR digest vào `main`
+của repo manifest. Các Actions được pin theo commit SHA. CI không có kubeconfig.
+
+Cấu hình repository và credential riêng qua GitHub Variables/Secrets:
+`CONFIG_REPO`, `IMAGE_ARCH` và secret `CONFIG_REPO_PAT`.
+Xem bảng cấu hình hosted trong [README manifest](../gitops-manifests/README.md).
+Mật khẩu/token và đường dẫn máy không được viết vào source hoặc README.

@@ -1,4 +1,4 @@
-name: CI Pipeline & GitOps Promotion
+name: CI and optional GitOps release
 on:
   push:
     branches: [main]
@@ -13,7 +13,6 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   CONFIG_REPO: ${{ vars.CONFIG_REPO || format('{0}/gitops-manifests', github.repository_owner) }}
-  CONFIG_BRANCH: ${{ vars.CONFIG_BRANCH || 'main' }}
   IMAGE_ARCH: ${{ vars.IMAGE_ARCH || 'amd64' }}
   LOCAL_IMAGE: be-service-ci:${{ github.sha }}
 jobs:
@@ -181,7 +180,7 @@ jobs:
         with:
           repository: ${{ env.CONFIG_REPO }}
           token: ${{ secrets.CONFIG_REPO_PAT }}
-          ref: ${{ env.CONFIG_BRANCH }}
+          ref: main
           fetch-depth: 0
       - name: Install pinned YAML tools
         run: bash scripts/install-ci-tools.sh
@@ -203,11 +202,11 @@ jobs:
         uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
         with:
           token: ${{ secrets.CONFIG_REPO_PAT }}
-          base: ${{ env.CONFIG_BRANCH }}
+          base: main
           add-paths: apps/be-service/base/kustomization.yaml
-          title: "release(${{ env.CONFIG_BRANCH }}): ${{ needs.publish.outputs.version }}"
-          commit-message: "ci(${{ env.CONFIG_BRANCH }}): propose ${{ needs.publish.outputs.source_sha }}"
-          branch: release-be-service-${{ env.CONFIG_BRANCH }}
+          title: "release(main): ${{ needs.publish.outputs.version }}"
+          commit-message: "ci(main): propose ${{ needs.publish.outputs.source_sha }}"
+          branch: release-be-service-main
           body: |
             Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.publish.outputs.image_digest }}`
             Source: ${{ github.server_url }}/${{ github.repository }}/commit/${{ needs.publish.outputs.source_sha }}

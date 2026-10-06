@@ -1,4 +1,4 @@
-"""Check the real Dev update step fails before mutation for stale releases."""
+"""Check the real main update step fails before mutation for stale releases."""
 import os
 import pathlib
 import subprocess
@@ -9,7 +9,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SHA = 'a'*40
 
-class DevUpdateTest(unittest.TestCase):
+class MainUpdateTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
