@@ -11,9 +11,10 @@ permissions:
   contents: read
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/be-service
-  CONFIG_REPO: ${{ github.repository_owner }}/gitops-manifests
-  IMAGE_ARCH: ${{ vars.IMAGE_ARCH || 'arm64' }}
+  IMAGE_NAME: ${{ github.repository }}
+  CONFIG_REPO: ${{ vars.CONFIG_REPO || format('{0}/gitops-manifests', github.repository_owner) }}
+  CONFIG_BRANCH: ${{ vars.CONFIG_BRANCH || 'main' }}
+  IMAGE_ARCH: ${{ vars.IMAGE_ARCH || 'amd64' }}
   LOCAL_IMAGE: be-service-ci:${{ github.sha }}
 jobs:
   quality:
@@ -109,7 +110,7 @@ jobs:
   publish:
     name: Publish immutable image and release metadata
     needs: build-scan
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: vars.ENABLE_GITOPS_RELEASE == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -167,9 +168,9 @@ jobs:
           retention-days: 90
 
   update-gitops-config:
-    name: Propose dev image update
+    name: Propose image update
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
+    if: vars.ENABLE_GITOPS_RELEASE == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
     runs-on: ubuntu-latest
     steps:
       - name: Require explicit config repository credential
@@ -180,11 +181,11 @@ jobs:
         with:
           repository: ${{ env.CONFIG_REPO }}
           token: ${{ secrets.CONFIG_REPO_PAT }}
-          ref: dev
+          ref: ${{ env.CONFIG_BRANCH }}
           fetch-depth: 0
       - name: Install pinned YAML tools
         run: bash scripts/install-ci-tools.sh
-      - name: Prepare dev image update
+      - name: Prepare image update
         env:
           SOURCE_SHA: ${{ needs.publish.outputs.source_sha }}
           DIGEST: ${{ needs.publish.outputs.image_digest }}
@@ -195,19 +196,20 @@ jobs:
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid registry digest" >&2; exit 1; }
           test "$SOURCE_SHA" = "$(gh api "repos/$SOURCE_REPO/branches/main" --jq .commit.sha)"
-          (cd apps/be-service/base && kustomize edit set image "$IMAGE=$IMAGE@$DIGEST")
+          template=$(yq -er '.images[0].name' apps/be-service/base/kustomization.yaml)
+          (cd apps/be-service/base && kustomize edit set image "$template=$IMAGE@$DIGEST")
           bash scripts/validate-manifests.sh
-      - name: Create dev pull request
+      - name: Create release pull request
         uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
         with:
           token: ${{ secrets.CONFIG_REPO_PAT }}
-          base: dev
+          base: ${{ env.CONFIG_BRANCH }}
           add-paths: apps/be-service/base/kustomization.yaml
-          title: "release(dev): ${{ needs.publish.outputs.version }}"
-          commit-message: "ci(dev): propose ${{ needs.publish.outputs.source_sha }}"
-          branch: release-be-service-dev
+          title: "release(${{ env.CONFIG_BRANCH }}): ${{ needs.publish.outputs.version }}"
+          commit-message: "ci(${{ env.CONFIG_BRANCH }}): propose ${{ needs.publish.outputs.source_sha }}"
+          branch: release-be-service-${{ env.CONFIG_BRANCH }}
           body: |
             Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.publish.outputs.image_digest }}`
             Source: ${{ github.server_url }}/${{ github.repository }}/commit/${{ needs.publish.outputs.source_sha }}
             Evidence: ${{ needs.publish.outputs.source_run_url }}
-            The scanned image was published, signed and attested. Review and merge to deploy Dev.
+            The scanned image was published, signed and attested. Review and merge to deploy the configured overlays.

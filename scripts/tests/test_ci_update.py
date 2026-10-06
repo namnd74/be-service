@@ -19,6 +19,7 @@ class DevUpdateTest(unittest.TestCase):
         (self.root/'bin').mkdir()
         for name, script in {
             'gh': 'printf "%s\\n" "$REMOTE_SHA"',
+            'yq': 'echo ghcr.io/example/be-service',
             'kustomize': 'printf "update %s at %s\\n" "$*" "$PWD" >> "$CALLS"',
         }.items():
             p = self.root/'bin'/name
@@ -26,11 +27,11 @@ class DevUpdateTest(unittest.TestCase):
             p.chmod(0o755)
         (self.root/'scripts/validate-manifests.sh').write_text('echo validate >> "$CALLS"\n')
         workflow = (ROOT/'.github/workflows/ci.yaml').read_text()
-        step = workflow.split('      - name: Prepare dev image update\n', 1)[1].split('      - name:', 1)[0]
+        step = workflow.split('      - name: Prepare image update\n', 1)[1].split('      - name:', 1)[0]
         self.script = textwrap.dedent(step.split('        run: |\n', 1)[1])
         self.env = dict(os.environ, PATH=str(self.root/'bin')+':'+os.environ['PATH'],
                         CALLS=str(self.root/'calls'), SOURCE_SHA=SHA, REMOTE_SHA=SHA,
-                        SOURCE_REPO='namnd74/be-service', IMAGE='ghcr.io/namnd74/be-service',
+                        SOURCE_REPO='example/be-service', IMAGE='ghcr.io/example/be-service',
                         DIGEST='sha256:'+'b'*64)
 
     def prepare(self):
@@ -55,6 +56,13 @@ class DevUpdateTest(unittest.TestCase):
         self.assertIn('apps/be-service/base', calls)
         self.assertIn('validate', calls)
 
+
+    def test_custom_registry_updates_existing_template_name(self):
+        self.env['IMAGE'] = 'ghcr.io/team/backend'
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('edit set image ghcr.io/example/be-service='+self.env['IMAGE']+'@'+self.env['DIGEST'],
+                      (self.root/'calls').read_text())
 
     def test_invalid_version_is_rejected_before_metadata_output(self):
         workflow = (ROOT/'.github/workflows/ci.yaml').read_text()

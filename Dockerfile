@@ -19,7 +19,7 @@ FROM scratch
 
 ARG APP_VERSION=v1.1.0
 ARG GIT_COMMIT=dev-local
-ARG SOURCE_URL=https://github.com/namnd74/be-service
+ARG SOURCE_URL=local://be-service
 LABEL org.opencontainers.image.version=$APP_VERSION \
       org.opencontainers.image.revision=$GIT_COMMIT \
       org.opencontainers.image.source=$SOURCE_URL

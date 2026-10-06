@@ -1,7 +1,8 @@
 # CI và supply chain
 
 Workflow build một image, scan đúng image đó, rồi chỉ sau khi gate đạt mới
-publish lên GHCR trên `main`. Image dùng tag bất biến `sha-<full commit SHA>` và
+publish lên GHCR trên `main` khi `ENABLE_GITOPS_RELEASE=true`.
+Flow local không thực hiện scan/ký/attest này. Image dùng tag bất biến `sha-<full commit SHA>` và
 digest registry; không dùng `latest`. `release.json` chỉ được giữ như artifact
 của CI cùng report vulnerability, CycloneDX SBOM và metadata run.
 
@@ -11,7 +12,8 @@ image nhận GitHub artifact attestation (SLSA provenance) và chữ ký keyless
 trong GHCR. OIDC identity
 của GitHub Actions là ngắn hạn, không có private key trong repo.
 
-PR cập nhật Dev do CI tạo sau gate. Promotion `dev -> staging` và
+PR cập nhật config do CI tạo sau gate, vào `CONFIG_BRANCH` (mặc định `main`).
+Flow promotion sau đây chỉ dành cho deployment hosted ba nhánh tùy chọn. Promotion `dev -> staging` và
 `staging -> prod` dùng cùng digest và tạo PR; workflow từ chối cặp môi trường
 không được hỗ trợ, image mutable, digest không khớp hoặc gate/provenance không
 hợp lệ. Rollback cũng tạo PR, khôi phục image và `deployment-env-patch.yaml`
@@ -36,7 +38,7 @@ SHA phải là commit của `main`, provenance phải chỉ ra đúng repository
 workflow identity GitHub, rồi mới xác minh chữ ký Cosign:
 
 ```sh
-cd /Volumes/MacOs/workspaces/git-ops/gitops-manifests
+cd ../gitops-manifests
 scripts/verify-image.sh ghcr.io/OWNER/be-service@sha256:DIGEST OWNER/be-service
 ```
 

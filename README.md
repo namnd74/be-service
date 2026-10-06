@@ -1,35 +1,32 @@
-# Backend Microservice
+# Backend dùng cho GitOps demo
 
-Repo ứng dụng Go và CI. `main.go` phục vụ UI, `/version`, `/healthz`; VERSION,
-commit SHA và các label OCI được ghi vào image lúc build. Secret chỉ hiển thị
-`loaded`/`missing`; fault demo kéo dài chỉ bật ở Dev.
+Service Go có `/healthz` và `/version`. Repo làm việc trên `main`.
+Source không phụ thuộc tài khoản GitHub hoặc đường dẫn máy cụ thể.
 
-CI chạy test/coverage/race/vet/format, build một image theo `IMAGE_ARCH`, Trivy
-scan image đó, rồi trên `main` publish đúng image đã scan lên GHCR theo tag SHA
-và digest. Sau khi publish, cùng digest được attested và ký bằng Cosign.
-Sau gate, CI tạo PR cập nhật image chung vào nhánh config `dev`; CI không push thẳng vào config repo,
-không triển khai Kubernetes. Argo CD đọc config repo để deploy sau khi PR được
-review và merge.
-
-`release.json` chỉ là artifact của CI, lưu cùng report scan/SBOM/provenance; nó
-không được đặt trong overlay và không phải nguồn trạng thái triển khai.
+Chạy nhanh backend:
 
 ```bash
-bash scripts/check-quality.sh
-python3 -m unittest discover -s scripts/tests -v
+APP_ENV=dev DB_PASSWORD=local-demo DEMO_MODE=true go run .
 ```
 
-PR chạy quality/build/scan. Push `main` chạy pipeline phát hành và tạo Dev PR.
-`CONFIG_REPO_PAT` phải được đặt trong Secrets của cả hai repo, có quyền
-contents/pull_requests trên config repo và đọc packages/provenance của BE; không
-có fallback sang `GITHUB_TOKEN`. `IMAGE_ARCH` mặc định `arm64` cho lab Apple
-Silicon; cluster x86 dùng `amd64`. Promotion merge config `dev -> staging -> prod` qua PR và merge commit,
-giữ cùng digest đã scan. Rollback mở PR vào nhánh môi trường tương ứng.
+Mở <http://localhost:8080/version>. Password này chỉ là giá trị demo local.
+Kiểm tra: `bash scripts/check-quality.sh` (Go cần hỗ trợ các flags trong script).
 
-Các tool local gồm Go, Python, Docker và bộ kiểm tra manifest theo runbook;
-CI cài phiên bản đã pin cùng checksum qua `install-ci-tools.sh`.
+Để chạy toàn bộ Docker/k3d/Sealed Secrets/Argo CD và ba môi trường local,
+clone repo cấu hình cạnh repo này thành thư mục `gitops-manifests`, rồi:
 
-Đọc [runbook seminar](../gitops-manifests/scripts/demo-runbook.md) để setup,
-connect, promotion, demo security/secret/drift và rollback. [Supply-chain
-controls](docs/supply-chain.md) mô tả scan, SBOM, provenance, signing và helper
-kiểm tra image.
+```bash
+cd ../gitops-manifests
+cp .env.local.example .env.local
+bash scripts/local-dev.sh up
+```
+
+Xem [hướng dẫn từng bước](../gitops-manifests/scripts/rebuild-step-by-step.md).
+Image local build theo kiến trúc Docker host; không cần GHCR hoặc PAT.
+
+CI GitHub mặc định chạy quality, build và scan. Publish/ký/attest và mở PR vào
+repo cấu hình chỉ bật khi đặt variable `ENABLE_GITOPS_RELEASE=true`.
+`CONFIG_REPO` chỉ định repo manifest, `CONFIG_BRANCH` mặc định `main`,
+`IMAGE_ARCH` mặc định `amd64`. Cần secret `CONFIG_REPO_PAT` để tạo PR config.
+Xem [runbook cấu hình hosted](../gitops-manifests/scripts/demo-runbook.md) và
+[supply-chain controls](docs/supply-chain.md).

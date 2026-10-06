@@ -1,3 +1,3 @@
-module github.com/namnd74/be-service
+module example.com/be-service
 
 go 1.21
