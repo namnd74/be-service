@@ -222,7 +222,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	mu.RLock()
 	healthy := isHealthy || !demoAllowed()
 	data := PageData{
-		ServiceName: "Backend API Service - Seminar 20261006T204147Z-93924-0001-happy",
+		ServiceName: "Backend API Service - Seminar 20261006T220719Z-52818-0001-failure",
 		Version:     appVersion(),
 		GitCommit:   appCommit(),
 		Environment: envName,
