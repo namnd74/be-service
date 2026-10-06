@@ -42,11 +42,21 @@ class PublishImageTests(unittest.TestCase):
             )
             return result, pushed.exists(), release.read_text() if release.exists() else ""
 
+    def test_all_environment_tags_publish_and_other_branches_are_rejected(self):
+        for branch in ('dev', 'stg', 'prod'):
+            result, pushed, _ = self.run_script('ghcr.io/example/be-service', f'{branch}-sha-{SHA}', SHA, 'v1.2.3', 'https://example.test/run')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(pushed)
+        for tag in (f'main-sha-{SHA}', f'dev-sha-{"c"*40}', f'sha-{SHA}'):
+            result, pushed, _ = self.run_script('ghcr.io/example/be-service', tag, SHA, 'v1.2.3', 'https://example.test/run')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(pushed)
+
     def test_bad_metadata_fails_before_push(self):
         cases = [
-            (" ", f"sha-{SHA}", SHA, "v1.2.3", "https://example.test/run"),
-            (f"sha-{SHA}", f"sha-{SHA}", SHA, "1.2.3", "https://example.test/run"),
-            (f"sha-{SHA}", f"sha-{SHA}", SHA, "v1.2.3", "not-a-url"),
+            (" ", f"dev-sha-{SHA}", SHA, "v1.2.3", "https://example.test/run"),
+            (f"dev-sha-{SHA}", f"dev-sha-{SHA}", SHA, "1.2.3", "https://example.test/run"),
+            (f"dev-sha-{SHA}", f"dev-sha-{SHA}", SHA, "v1.2.3", "not-a-url"),
         ]
         for image, tag, source_sha, version, url in cases:
             with self.subTest(image=image, version=version, url=url):
@@ -57,7 +67,7 @@ class PublishImageTests(unittest.TestCase):
     def test_invalid_remote_digest_fails_after_push(self):
         result, pushed, _ = self.run_script(
             "ghcr.io/example/be-service",
-            f"sha-{SHA}",
+            f"dev-sha-{SHA}",
             SHA,
             "v1.2.3",
             "https://example.test/run",
@@ -69,7 +79,7 @@ class PublishImageTests(unittest.TestCase):
     def test_success_writes_strict_release_schema(self):
         result, pushed, release_text = self.run_script(
             "ghcr.io/example/be-service",
-            f"sha-{SHA}",
+            f"dev-sha-{SHA}",
             SHA,
             "v1.2.3",
             "https://example.test/run",

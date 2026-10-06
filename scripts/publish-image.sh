@@ -15,8 +15,8 @@ RUN_URL=$5
 RELEASE_JSON=$6
 
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "SOURCE_SHA must be a full commit SHA" >&2; exit 1; }
-[[ "$TAG" == sha-* ]] || { echo "TAG must be a full-sha tag (sha-...)" >&2; exit 1; }
-[[ "${TAG#sha-}" == "$SOURCE_SHA" ]] || { echo "TAG must contain the full source SHA" >&2; exit 1; }
+[[ "$TAG" =~ ^(dev|stg|prod)-sha-[0-9a-f]{40}$ ]] || { echo "TAG must be dev|stg|prod-sha-FULL_SHA" >&2; exit 1; }
+[[ "${TAG#*-sha-}" == "$SOURCE_SHA" ]] || { echo "TAG must contain the full source SHA" >&2; exit 1; }
 [[ -n "$IMAGE" && "$IMAGE" != *[[:space:]]* ]] || { echo "IMAGE must be non-empty and contain no whitespace" >&2; exit 1; }
 [[ "$VERSION" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]] || { echo "VERSION must match vX.Y.Z" >&2; exit 1; }
 [[ "$RUN_URL" =~ ^https?://[^[:space:]]+$ ]] || { echo "RUN_URL must be an http(s) URL" >&2; exit 1; }

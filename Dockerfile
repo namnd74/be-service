@@ -10,6 +10,9 @@ RUN go mod download
 
 COPY . .
 ARG TARGETARCH
+# Opt-in seminar fault: build fails before an image can be published.
+ARG DEMO_BUILD_FAIL=false
+RUN if [ "$DEMO_BUILD_FAIL" = true ]; then echo "SEMINAR: intentional prod build failure" >&2; exit 1; fi
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-w -s -X main.buildVersion=${APP_VERSION} -X main.buildCommit=${GIT_COMMIT}" \
     -o server .

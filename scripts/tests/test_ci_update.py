@@ -1,4 +1,4 @@
-"""Check the real main update step fails before mutation for stale releases."""
+"""Check the real branch update step fails before mutation for stale releases."""
 import os
 import pathlib
 import subprocess
@@ -9,7 +9,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SHA = 'a'*40
 
-class MainUpdateTest(unittest.TestCase):
+class EnvironmentUpdateTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -31,12 +31,31 @@ class MainUpdateTest(unittest.TestCase):
         self.script = textwrap.dedent(step.split('        run: |\n', 1)[1])
         self.env = dict(os.environ, PATH=str(self.root/'bin')+':'+os.environ['PATH'],
                         CALLS=str(self.root/'calls'), SOURCE_SHA=SHA, REMOTE_SHA=SHA,
-                        SOURCE_REPO='example/be-service', IMAGE='ghcr.io/example/be-service',
+                        SOURCE_BRANCH='dev', SOURCE_REPO='example/be-service', IMAGE='ghcr.io/example/be-service',
                         DIGEST='sha256:'+'b'*64)
 
     def prepare(self):
         return subprocess.run(['bash', '-c', self.script], cwd=self.root, env=self.env,
                               capture_output=True, text=True)
+
+    def test_prod_build_fault_is_forwarded_to_docker_without_publishing(self):
+        workflow = (ROOT/'.github/workflows/ci.yaml').read_text()
+        step = workflow.split('      - name: Build the single local image\n', 1)[1].split('      - name:', 1)[0]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        docker = self.root/'bin/docker'
+        docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\ncase "$*" in *DEMO_BUILD_FAIL=true*) exit 1;; esac\n')
+        docker.chmod(0o755)
+        env = dict(self.env, APP_VERSION='v1.3.1', GITHUB_SHA=SHA,
+                   GITHUB_SERVER_URL='https://github.com', GITHUB_REPOSITORY='example/be-service',
+                   IMAGE_ARCH='arm64', LOCAL_IMAGE='ci:test', DEMO_BUILD_FAIL='true')
+        result = subprocess.run(['bash', '-c', script], cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('DEMO_BUILD_FAIL=true', (self.root/'calls').read_text())
+
+    def test_main_cannot_propose_a_release(self):
+        self.env['SOURCE_BRANCH'] = 'main'
+        self.assertNotEqual(self.prepare().returncode, 0)
+        self.assertFalse((self.root/'calls').exists())
 
     def test_stale_release_does_not_touch_configuration(self):
         self.env['REMOTE_SHA'] = 'c'*40

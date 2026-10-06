@@ -1,49 +1,50 @@
-# Backend
+# Backend cho GitOps seminar
 
-Service Go cho GitOps demo, làm việc trên `main`.
+Service Go có giao diện trạng thái, `/healthz`, `/version`.
 
-| Endpoint | Chức năng |
-| --- | --- |
-| `/` | Giao diện trạng thái |
-| `/healthz` | Kiểm tra health |
-| `/version` | Version, source commit và môi trường |
+Luồng code: `feature/* → dev → stg → prod`, qua PR và review.
+Merge vào mỗi nhánh phát hành tự chạy CI: test/race/vet → build → Trivy → GHCR → ký/attest →
+PR image digest vào **cùng nhánh** repo manifest. Merge PR manifest khiến Argo deploy môi trường tương ứng.
+`main` giữ source/CI dùng chung và không tự publish release.
 
-## Chạy backend riêng
+## Chạy riêng trên máy
 
-Cần Go và Bash. Tạo cấu hình local từ mẫu:
+Cần Go và Bash. Copy `.env.local.example` nếu chưa có env riêng, chỉnh giá trị rồi chạy:
 
 ```bash
 cp .env.local.example .env.local
-```
-
-Chỉnh password và các giá trị riêng trong `.env.local`, rồi chạy trong Bash:
-
-```bash
 set -a
 source .env.local
 set +a
 go run .
 ```
 
-Mặc định HTTP tại <http://localhost:8080/>. `.env.local` không được commit
-hoặc gửi vào Docker build context.
+HTTP mặc định http://localhost:8080/.
 
-| Biến | Chức năng |
+| Env | Vai trò |
 | --- | --- |
-| `PORT` | Port backend |
+| `PORT` | Port HTTP |
 | `APP_ENV` | Tên môi trường |
-| `DB_PASSWORD` | Secret local |
-| `DEMO_MODE` | Bật thao tác demo, chỉ có hiệu lực ở dev |
-| `DEMO_FAULT` | Mô phỏng lỗi khi demo mode được bật |
+| `DB_PASSWORD` | Secret; giao diện chỉ báo đã nạp, không hiển thị giá trị |
+| `DEMO_MODE` / `DEMO_FAULT` | Mô phỏng health, chỉ có hiệu lực trong dev |
 
-## Demo GitOps tự động với Kubernetes local
+Kubernetes lấy env công khai từ ConfigMap và password từ Secret riêng cho từng môi trường.
+Env được truyền lúc chạy; image vẫn được build riêng từng nhánh theo flow seminar.
+Không có kết nối database thật.
 
-Clone repository manifest cạnh repo này thành thư mục `gitops-manifests`,
-sau đó theo [README manifest](../gitops-manifests/README.md).
-Script Bash dựng k3d/Argo CD/Sealed Secrets và cấu hình ba môi trường trên
-`main`. Merge PR backend tự chạy CI để phát hành GHCR và tạo PR image trong
-repo manifest. Merge PR manifest khiến Argo tự triển khai dev/staging/prod.
-Secret Kubernetes được bootstrap riêng, không lấy password từ env chạy Go riêng.
+## CI và cấu hình riêng
+
+GitHub Variables: `ENABLE_GITOPS_RELEASE=true`, `CONFIG_REPO`, `IMAGE_ARCH` (`arm64`/`amd64`).
+GitHub Secret: `CONFIG_REPO_PAT` có quyền cập nhật manifest và tạo PR.
+Không commit credential hoặc `.env.local`.
+
+Trivy chặn HIGH/CRITICAL (kể cả chưa có bản fix), xuất report/SBOM.
+Image publish là image đã scan, deploy bằng digest; Cosign/provenance gắn với nhánh build.
+CI không có kubeconfig. Release cũ hơn HEAD của nhánh không được tạo PR cập nhật cấu hình.
+
+`DEMO_FAIL_PROD_BUILD=true` là **GitHub Variable tùy chọn chỉ dùng seminar**:
+Docker build trên push/dispatch prod cố ý thất bại; PR checks và dev/stg không bị ảnh hưởng.
+Mặc định false. Đặt lại false sau demo. Build failure không đổi image đang chạy.
 
 ## Kiểm tra
 
@@ -52,16 +53,5 @@ bash scripts/check-quality.sh
 python3 -m unittest discover -s scripts/tests
 ```
 
-Quality gồm test, coverage, race, vet và gofmt.
-
-## CI và phát hành
-
-CI mặc định test/build/scan. Trivy chặn HIGH/CRITICAL, xuất report và SBOM.
-Khi bật `ENABLE_GITOPS_RELEASE=true` trong GitHub Variables, image đã scan được
-publish GHCR, ký keyless Cosign, attest provenance và mở PR digest vào `main`
-của repo manifest. Các Actions được pin theo commit SHA. CI không có kubeconfig.
-
-Cấu hình repository và credential riêng qua GitHub Variables/Secrets:
-`CONFIG_REPO`, `IMAGE_ARCH` và secret `CONFIG_REPO_PAT`.
-Xem bảng cấu hình hosted trong [README manifest](../gitops-manifests/README.md).
-Mật khẩu/token và đường dẫn máy không được viết vào source hoặc README.
+Clone repo manifest cạnh checkout này. Xem README và `docs/demo.md` của repo manifest
+để dựng cluster, chạy release ba môi trường và rollback.

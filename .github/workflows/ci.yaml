@@ -2,9 +2,9 @@ name: CI and GitOps release
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, dev, stg, prod]
   pull_request:
-    branches: [main]
+    branches: [main, dev, stg, prod]
 concurrency:
   group: be-service-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
@@ -53,8 +53,10 @@ jobs:
       - name: Build the single local image
         env:
           APP_VERSION: ${{ steps.meta.outputs.version }}
+          DEMO_BUILD_FAIL: ${{ github.event_name != 'pull_request' && github.ref_name == 'prod' && vars.DEMO_FAIL_PROD_BUILD == 'true' && 'true' || 'false' }}
         run: |
           docker build --load --platform "linux/$IMAGE_ARCH" \
+            --build-arg DEMO_BUILD_FAIL="${DEMO_BUILD_FAIL:-false}" \
             --build-arg APP_VERSION="$APP_VERSION" \
             --build-arg GIT_COMMIT="$GITHUB_SHA" \
             --build-arg SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
@@ -110,7 +112,7 @@ jobs:
   publish:
     name: Publish immutable image and release metadata
     needs: build-scan
-    if: vars.ENABLE_GITOPS_RELEASE == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    if: vars.ENABLE_GITOPS_RELEASE == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && contains(fromJSON('["dev","stg","prod"]'), github.ref_name)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -134,11 +136,11 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - run: docker tag "$LOCAL_IMAGE" "$REGISTRY/$IMAGE_NAME:sha-${{ github.sha }}"
+      - run: docker tag "$LOCAL_IMAGE" "$REGISTRY/$IMAGE_NAME:${{ github.ref_name }}-sha-${{ github.sha }}"
       - name: Push and record remote manifest digest
         id: publish
         run: |
-          ./scripts/publish-image.sh "$REGISTRY/$IMAGE_NAME" "sha-${{ github.sha }}" \
+          ./scripts/publish-image.sh "$REGISTRY/$IMAGE_NAME" "${{ github.ref_name }}-sha-${{ github.sha }}" \
             "${{ github.sha }}" "${{ needs.build-scan.outputs.version }}" \
             "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" release.json
       - name: Attest published image provenance
@@ -170,7 +172,7 @@ jobs:
   update-gitops-config:
     name: Propose image update
     needs: publish
-    if: vars.ENABLE_GITOPS_RELEASE == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
+    if: vars.ENABLE_GITOPS_RELEASE == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && contains(fromJSON('["dev","stg","prod"]'), github.ref_name) && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
     runs-on: ubuntu-latest
     steps:
       - name: Require explicit config repository credential
@@ -181,12 +183,13 @@ jobs:
         with:
           repository: ${{ env.CONFIG_REPO }}
           token: ${{ secrets.CONFIG_REPO_PAT }}
-          ref: main
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
       - name: Install pinned YAML tools
         run: bash scripts/install-ci-tools.sh
       - name: Prepare image update
         env:
+          SOURCE_BRANCH: ${{ github.ref_name }}
           SOURCE_SHA: ${{ needs.publish.outputs.source_sha }}
           DIGEST: ${{ needs.publish.outputs.image_digest }}
           SOURCE_REPO: ${{ github.repository }}
@@ -195,7 +198,8 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid registry digest" >&2; exit 1; }
-          test "$SOURCE_SHA" = "$(gh api "repos/$SOURCE_REPO/branches/main" --jq .commit.sha)"
+          [[ "$SOURCE_BRANCH" =~ ^(dev|stg|prod)$ ]] || exit 1
+          test "$SOURCE_SHA" = "$(gh api "repos/$SOURCE_REPO/branches/$SOURCE_BRANCH" --jq .commit.sha)"
           template=$(yq -er '.images[0].name' apps/be-service/base/kustomization.yaml)
           (cd apps/be-service/base && kustomize edit set image "$template=$IMAGE@$DIGEST")
           bash scripts/validate-manifests.sh
@@ -203,13 +207,13 @@ jobs:
         uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
         with:
           token: ${{ secrets.CONFIG_REPO_PAT }}
-          base: main
+          base: ${{ github.ref_name }}
           add-paths: apps/be-service/base/kustomization.yaml
-          title: "release(main): ${{ needs.publish.outputs.version }}"
-          commit-message: "ci(main): propose ${{ needs.publish.outputs.source_sha }}"
-          branch: release-be-service-main
+          title: "release(${{ github.ref_name }}): ${{ needs.publish.outputs.version }}"
+          commit-message: "ci(${{ github.ref_name }}): propose ${{ needs.publish.outputs.source_sha }}"
+          branch: release-be-service-${{ github.ref_name }}
           body: |
             Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.publish.outputs.image_digest }}`
             Source: ${{ github.server_url }}/${{ github.repository }}/commit/${{ needs.publish.outputs.source_sha }}
             Evidence: ${{ needs.publish.outputs.source_run_url }}
-            The scanned image was published, signed and attested. Review and merge to deploy the configured overlays.
+            The scanned image was published, signed and attested. Review and merge to deploy only the corresponding environment.
