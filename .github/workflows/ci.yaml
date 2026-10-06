@@ -1,5 +1,6 @@
-name: CI and optional GitOps release
+name: CI and GitOps release
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -109,7 +110,7 @@ jobs:
   publish:
     name: Publish immutable image and release metadata
     needs: build-scan
-    if: vars.ENABLE_GITOPS_RELEASE == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: vars.ENABLE_GITOPS_RELEASE == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -169,7 +170,7 @@ jobs:
   update-gitops-config:
     name: Propose image update
     needs: publish
-    if: vars.ENABLE_GITOPS_RELEASE == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
+    if: vars.ENABLE_GITOPS_RELEASE == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip config]') && !contains(github.event.head_commit.message, '[skip deploy]')
     runs-on: ubuntu-latest
     steps:
       - name: Require explicit config repository credential

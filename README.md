@@ -36,13 +36,14 @@ hoặc gửi vào Docker build context.
 | `DEMO_MODE` | Bật thao tác demo, chỉ có hiệu lực ở dev |
 | `DEMO_FAULT` | Mô phỏng lỗi khi demo mode được bật |
 
-## Chạy toàn bộ GitOps local
+## Demo GitOps tự động với Kubernetes local
 
 Clone repository manifest cạnh repo này thành thư mục `gitops-manifests`,
 sau đó theo [README manifest](../gitops-manifests/README.md).
-Launcher build image theo Docker host, dựng k3d/Argo CD/Sealed Secrets và triển
-khai ba môi trường trên `main`. Secret Kubernetes được launcher tạo riêng;
-không lấy password từ env của chế độ chạy Go riêng.
+Script Bash dựng k3d/Argo CD/Sealed Secrets và cấu hình ba môi trường trên
+`main`. Merge PR backend tự chạy CI để phát hành GHCR và tạo PR image trong
+repo manifest. Merge PR manifest khiến Argo tự triển khai dev/staging/prod.
+Secret Kubernetes được bootstrap riêng, không lấy password từ env chạy Go riêng.
 
 ## Kiểm tra
 
